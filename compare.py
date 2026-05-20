@@ -2,6 +2,9 @@ import cv2
 import numpy as np
 from skimage.metrics import structural_similarity as ssim
 import os
+import pillow_heif
+from sklearn.neighbors import KNeighborsClassifier
+import time
 
 def calculer_mse(img1, img2):
         img1 = img1.astype(np.float32) / 255.0
@@ -13,9 +16,6 @@ def calculer_mse(img1, img2):
         
         return err
 
-img1 = cv2.imread('/Users/ducnguyenanh/Downloads/iloveimg-converted (1)/IMG_3043.jpg')
-img2 = cv2.imread('/Users/ducnguyenanh/Downloads/iloveimg-converted (1)/IMG_3044.jpg')
-
 def calculer_SSIM(img1, img2):
      #Convertir les images en grayscale
     img1_gray = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
@@ -24,12 +24,6 @@ def calculer_SSIM(img1, img2):
     index = ssim(img1_gray, img2_gray)
     return index
 
-print(f"SSIM between images: {calculer_SSIM(img1, img2)}")
-
-
-from sklearn.neighbors import KNeighborsClassifier
-
-
 def pretraiter(img_path, target_size=(64, 64)):
     """
     param img_path: chemin vers l'image à prétraiter
@@ -37,11 +31,19 @@ def pretraiter(img_path, target_size=(64, 64)):
     Convertit une image en grayscale, la redimensionne à une taille standard, puis les pixels en un vecteur de coordonnées.
     """
     # grayscale
-    img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        return None
-        
-    # redimensionne
+    if img_path.lower().endswith('.heic'):
+        # Lire les HEIC (si l'utilisatuer a un iPhone)
+        heif_file = pillow_heif.open_heif(img_path, convert_hdr_to_8bit=True, bgr_mode=True)
+        # Converti en bgr
+        img_bgr = np.asarray(heif_file)
+        # Et apres on applique le grayscale
+        img = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    else:
+        img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+                return None
+                
+        # redimensionne
     img_resized = cv2.resize(img, target_size)
     
     # Flatten: transformer l'image 2D en un vecteur 1D de coordonnées (pixels)
@@ -99,10 +101,11 @@ def map(dataset_path):
 
 # Comparaison de deux images par KNN
 if __name__ == "__main__":
+    start_time = time.time()
     
     # CONFIGURATION (à faire pour chaque PC perso)
-    DATASET_DIRECTOIRE = '/Users/ducnguyenanh/Downloads/my_flower_dataset/'
-    IMAGE_CHEMIN = '/Users/ducnguyenanh/Downloads/iloveimg-converted (1)/IMG_3071.jpg'
+    DATASET_DIRECTOIRE = '/Users/ducnguyenanh/Downloads/Grand Data Set'
+    IMAGE_CHEMIN = '/Users/ducnguyenanh/Downloads/images_coquelicot.jpg'
 
     X_train, y_train = map(DATASET_DIRECTOIRE)
     
@@ -117,7 +120,6 @@ if __name__ == "__main__":
         
         # Input les coords et les labels dans le modèle KNN
         knn.fit(X_train, y_train)
-        print("KNN est entraîné.")
         
         # COMPARAISON
         X_image = pretraiter(IMAGE_CHEMIN)
@@ -137,7 +139,13 @@ if __name__ == "__main__":
             print(f"L'image est classée comme: {prediction[0]}")
             print(f"Distances aux voisins les plus proches: {distances[0]}")
             print(f"Leurs indexes dans le dataset original sont: {indices[0]}")
+            end_time = time.time()
+            print(f"Temps d'exécution: {end_time - start_time} secondes")
         else:
             print("Erreur: Ne peut pas charger le fichier image.")
+            end_time = time.time()
+            print(f"Temps d'exécution: {end_time - start_time} secondes")
     else:
         print("Echec de la construction du map.")
+        end_time = time.time()
+        print(f"Temps d'exécution: {end_time - start_time} secondes")
