@@ -1,85 +1,85 @@
-import matplotlib.pyplot as plt
-from skimage.io import imread
-from skimage.color import rgb2gray, rgb2hsv
-from skimage.filters import sobel, threshold_otsu
-from skimage.measure import label, regionprops
-from skimage.morphology import disk, dilation, erosion 
-from scipy import ndimage as ndi
+from kivy.app import App
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.camera import Camera
+from kivy.uix.button import Button
+from kivy.uix.image import Image
+from kivy.graphics import Rotate, PushMatrix, PopMatrix
+from android.permissions import request_permissions, Permission
+import os # For path manipulation
+import sys # For modifying sys.path to import local modules
+import cv2 # To load and save images for processing
 import numpy as np
-import os
 
+# Add the directory containing contour.py to sys.path
+sys.path.append(os.path.join(os.path.dirname(__file__), 'reconnaissance_images'))
+from contour import process_flower_image # Import the function
 
-def process_flower_image(img_array):
-    """
-    Traite une image de fleur (numpy.ndarray) pour segmenter la partie où il y a la fleur.
+class CameraApp(App):
+    def build(self):
+        request_permissions([Permission.CAMERA])
 
-    Paramètre:
-        img_array (numpy.ndarray): L'image source : NumPy array (RGB).
+        layout = BoxLayout(orientation='vertical')
 
-    Returns:
-        L'image segmenté de la fleur (numpy.ndarray)
-    """
-    if img_array is None:
-        print("Error: Pas d'image (image = None)")
-        return None
+        self.camera = Camera(resolution=(640, 480), play=True)
 
-    # Ensure image is RGB if it's grayscale or RGBA
-    if img_array.ndim == 2:
-        img = np.stack([img_array, img_array, img_array], axis=-1)
-    elif img_array.shape[2] == 4: # RGBA to RGB
-        img = img_array[:, :, :3]
-    else:
-        img = img_array # Assume it's already RGB
+        # Correction de la rotation de 90 degrés
+        with self.camera.canvas.before:
+            PushMatrix()
+            self.rot = Rotate(angle=-90, origin=self.camera.center)
+        with self.camera.canvas.after:
+            PopMatrix()
+        self.camera.bind(pos=self._update_camera_rotation, size=self._update_camera_rotation)
 
-        # 1. Préparation des canaux : niveaux de gris et saturation
-        gray_img = rgb2gray(img)
-        hsv_img = rgb2hsv(img)
-        saturation = hsv_img[:, :, 1]
-        brightness = hsv_img[:, :, 2]
+        # Widget pour afficher la dernière photo prise
+        self.last_photo = Image()
 
-        # 2. Calcul des gradients sur les deux aspects
-        grad_gray = sobel(gray_img)
-        grad_sat = sobel(saturation)
-        grad_combined = np.maximum(grad_gray, grad_sat)
+        btn = Button(text="Capture et Traitement")
+        btn.bind(on_press=self.capture_and_process)
 
-        # 3. Création d'un masque de confiance (zones ni trop sombres, ni trop grises)
-        # Ignore what is too dark (shadows) or too little saturated (dull earth/grass)
-        confidence_mask = (saturation > np.mean(saturation)) & (brightness > 0.3)
+        layout.add_widget(self.camera)
+        layout.add_widget(self.last_photo)
+        layout.add_widget(btn)
 
-        # 4. Masque final : Gradient combiné intersecté avec la zone de confiance
-        seuil_grad = threshold_otsu(grad_combined)
-        mask = (grad_combined > seuil_grad) & confidence_mask  # transforme l'image en binaire
+        return layout
+    
+    def _update_camera_rotation(self, instance, value):
+        self.rot.origin = instance.center
 
-        # 4. Nettoyage et unification de la zone de la fleur
-        mask = dilation(mask, disk(2))
-        mask = ndi.binary_fill_holes(mask)
-        mask = erosion(mask, disk(3))
-        mask = dilation(mask, disk(10))
+    def capture_and_process(self, instance):
+        original_photo_path = os.path.join(self.user_data_dir, "original_photo.png")
+        processed_photo_path = os.path.join(self.user_data_dir, "processed_photo.png")
 
-        # 5. Identification des régions et sélection de la fleur
-        labels = label(mask)
-        regions = regionprops(labels, intensity_image=saturation)
+        self.camera.export_to_png(original_photo_path)
+        print("Original photo saved:", original_photo_path)
 
-        if regions:
-            # saturation au carré pour donner de l'importance à la couleur 
-            flower_region = max(regions, key=lambda r: r.area * (r.intensity_mean ** 2) if r.intensity_mean is not None else 0)
-            minr, minc, maxr, maxc = flower_region.bbox
+        try:
+            # OpenCV charge en BGR par défaut, on convertit en RGB pour l'algorithme
+            img_bgr = cv2.imread(original_photo_path)
+            if img_bgr is None:
+                raise FileNotFoundError(f"Impossible de lire l'image à {original_photo_path}")
+        except Exception as e:
+            print(f"Error loading captured image {original_photo_path}: {e}")
+            self.last_photo.source = original_photo_path # Fallback
+            self.last_photo.reload()
+            return
+
+        # Gère le retour : soit l'image seule, soit le tuple (image, bbox)
+        result = process_flower_image(img_bgr)
+        processed_img_array = result
+
+        if processed_img_array is not None:
+            if processed_img_array.dtype != np.uint8:
+                processed_img_array = (processed_img_array * 255).astype(np.uint8)
             
-            # 5. Adaptive margin for cropping
-            # Ensure margin calculation doesn't lead to negative dimensions or out-of-bounds access
-            margin = int(max(maxr - minr, maxc - minc) * 0.1) + 100
-            minr = max(0, minr - margin)
-            minc = max(0, minc - margin)
-            maxr = min(img.shape[0], maxr + margin)
-            maxc = min(img.shape[1], maxc + margin)
-            
-            # Test si dimensions finales sont bonnes
-            if minr >= maxr or minc >= maxc:
-                print("Attention: Zone de l'image fausse.")
-                return None
-
-            cropped_img = img[minr:maxr, minc:maxc]
-            return cropped_img
+            # Conversion RGB vers BGR avant de sauvegarder avec OpenCV
+            img_bgr_out = cv2.cvtColor(processed_img_array, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(processed_photo_path, img_bgr_out)
+            print("Processed photo saved:", processed_photo_path)
+            self.last_photo.source = processed_photo_path
         else:
-            print(f"Aucune région détectée dans l'image.")
-            return None
+            print("No flower detected or processing failed. Displaying original photo.")
+            self.last_photo.source = original_photo_path
+        
+        self.last_photo.reload()
+
+CameraApp().run()
