@@ -1,85 +1,79 @@
-from kivy.app import App
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.camera import Camera
-from kivy.uix.button import Button
-from kivy.uix.image import Image
-from kivy.graphics import Rotate, PushMatrix, PopMatrix
-from android.permissions import request_permissions, Permission
-import os # For path manipulation
-import sys # For modifying sys.path to import local modules
-import cv2 # To load and save images for processing
+import cv2
 import numpy as np
 
-# Add the directory containing contour.py to sys.path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'reconnaissance_images'))
-from contour import process_flower_image # Import the function
+def process_flower_image(img_bgr):
+    """
+    Traite une image de fleur (numpy.ndarray) pour segmenter la partie où il y a la fleur.
 
-class CameraApp(App):
-    def build(self):
-        request_permissions([Permission.CAMERA])
+    Paramètre:
+        img_bgr (numpy.ndarray): L'image source : NumPy array (BGR, format standard OpenCV).
+        show_steps (bool): Si True, affiche les étapes de traitement avec matplotlib.
 
-        layout = BoxLayout(orientation='vertical')
-
-        self.camera = Camera(resolution=(640, 480), play=True)
-
-        # Correction de la rotation de 90 degrés
-        with self.camera.canvas.before:
-            PushMatrix()
-            self.rot = Rotate(angle=-90, origin=self.camera.center)
-        with self.camera.canvas.after:
-            PopMatrix()
-        self.camera.bind(pos=self._update_camera_rotation, size=self._update_camera_rotation)
-
-        # Widget pour afficher la dernière photo prise
-        self.last_photo = Image()
-
-        btn = Button(text="Capture et Traitement")
-        btn.bind(on_press=self.capture_and_process)
-
-        layout.add_widget(self.camera)
-        layout.add_widget(self.last_photo)
-        layout.add_widget(btn)
-
-        return layout
+    Returns:
+        tuple: (cropped_img, original_bbox) where cropped_img is the segmented and cropped flower image
+               and original_bbox is a tuple (min_row, min_col, max_row, max_col) of the detected flower's bounding box in the original image.
+               Returns (None, None) if no flower is detected or processing fails.
+    """
+    # 1. Conversions de base
+    rgb_img = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    hsv_img = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
     
-    def _update_camera_rotation(self, instance, value):
-        self.rot.origin = instance.center
+    # Rouge : On resserre la teinte et on demande une couleur très vive (S=100)
+    mask_rouge = cv2.bitwise_or(
+        cv2.inRange(hsv_img, np.array([0, 180, 120]), np.array([8, 255, 255])),
+        cv2.inRange(hsv_img, np.array([170, 180, 120]), np.array([180, 255, 255]))
+    )
+    # Jaune : On monte H_min à 22 pour éviter l'orange/chair de la peau
+    # Et on augmente S_min pour ne prendre que du jaune très saturé
+    mask_jaune = cv2.inRange(hsv_img, np.array([15, 130, 150]), np.array([30, 255, 255]))
+    
+    # Bleu et Violet : On commence plus loin du vert (H=105)
+    mask_bleu_violet = cv2.inRange(hsv_img, np.array([105, 100, 80]), np.array([155, 255, 255]))
+    
+    # Rose : Teinte située entre le violet et le rouge (Magenta/Rose vif)
+    mask_rose = cv2.inRange(hsv_img, np.array([145, 0, 80]), np.array([255, 255, 255]))
 
-    def capture_and_process(self, instance):
-        original_photo_path = os.path.join(self.user_data_dir, "original_photo.png")
-        processed_photo_path = os.path.join(self.user_data_dir, "processed_photo.png")
+    # Blanc : On demande une luminosité extrême (V=215) et une saturation très faible (S<35)
+    mask_blanc = cv2.inRange(hsv_img, np.array([0, 0, 215]), np.array([180, 35, 255]))
 
-        self.camera.export_to_png(original_photo_path)
-        print("Original photo saved:", original_photo_path)
+    # Fusion de toutes les couleurs de fleurs détectées
+    color_mask = cv2.bitwise_or(mask_rouge, cv2.bitwise_or(mask_jaune, cv2.bitwise_or(mask_bleu_violet, cv2.bitwise_or(mask_rose, mask_blanc))))
+    
+    # Nettoyage morphologique : on enlève les petits points (bruit) qui resteraient et on li les bouts proches ensuite
+    # Taille du kernel adaptative à la résolution
+    h, w = color_mask.shape[:2]
+    k_size_open = max(3, int(max(h, w) * 0.005)) # 1.2% de la diagonale/dimension max (bien pour casser les tiges)
+    k_size_close = max(3, int(max(h, w) * 0.025)) # 2% de la diagonale/dimension max
 
-        try:
-            # OpenCV charge en BGR par défaut, on convertit en RGB pour l'algorithme
-            img_bgr = cv2.imread(original_photo_path)
-            if img_bgr is None:
-                raise FileNotFoundError(f"Impossible de lire l'image à {original_photo_path}")
-        except Exception as e:
-            print(f"Error loading captured image {original_photo_path}: {e}")
-            self.last_photo.source = original_photo_path # Fallback
-            self.last_photo.reload()
-            return
+    kernel_open = np.ones((k_size_open, k_size_open), np.uint8)
+    kernel_close = np.ones((k_size_close, k_size_close), np.uint8)
 
-        # Gère le retour : soit l'image seule, soit le tuple (image, bbox)
-        result = process_flower_image(img_bgr)
-        processed_img_array = result
+    mask = cv2.morphologyEx(color_mask, cv2.MORPH_OPEN, kernel_open)  # Supprime le bruit (petits points blancs)
+    mask_after_open = mask
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel_close)  # Bouche les trous (zones noires internes)
 
-        if processed_img_array is not None:
-            if processed_img_array.dtype != np.uint8:
-                processed_img_array = (processed_img_array * 255).astype(np.uint8)
-            
-            # Conversion RGB vers BGR avant de sauvegarder avec OpenCV
-            img_bgr_out = cv2.cvtColor(processed_img_array, cv2.COLOR_RGB2BGR)
-            cv2.imwrite(processed_photo_path, img_bgr_out)
-            print("Processed photo saved:", processed_photo_path)
-            self.last_photo.source = processed_photo_path
-        else:
-            print("No flower detected or processing failed. Displaying original photo.")
-            self.last_photo.source = original_photo_path
+    # 5. Identification des régions et sélection de la fleur
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask)
+
+    best_score = -1
+    original_bbox = None
+
+    for i in range(1, num_labels): # 0 est le background
+        area = stats[i, cv2.CC_STAT_AREA]
+        x, y, w, h = stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP], stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
         
-        self.last_photo.reload()
+        if area > best_score:
+            best_score = area
+            original_bbox = (y, x, y + h, x + w) # format (minr, minc, maxr, maxc)
 
-CameraApp().run()
+    if original_bbox is None:
+        return None
+
+    cropped_img = rgb_img[original_bbox[0]:original_bbox[2], original_bbox[1]:original_bbox[3]]
+
+    if cropped_img is not None:
+        return cropped_img
+    
+    print(f"Aucune région détectée dans l'image.")
+    return None
+  
