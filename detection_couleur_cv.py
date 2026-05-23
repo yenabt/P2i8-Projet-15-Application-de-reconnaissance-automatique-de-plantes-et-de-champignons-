@@ -18,7 +18,24 @@ NAMED_COLORS = {
 }
 
 def segment_flower(fleur_bgr):
-    
+    """
+    Segmente la fleur dans une image en isolant le premier plan du fond.
+
+    Applique un flou gaussien, une analyse HSV (saturation + valeur),
+    un seuillage d'Otsu, puis l'algorithme de Watershed pour délimiter
+    précisément la région de la fleur.
+
+    Paramètres
+    ----------
+    fleur_bgr : numpy.ndarray
+        Image de la fleur au format BGR (tel que retourné par cv2.imread).
+
+    Retourne
+    --------
+    fg_mask : numpy.ndarray
+        Masque binaire (uint8) de même taille que l'image d'entrée,
+        où 255 correspond aux pixels appartenant à la fleur et 0 au fond.
+    """        
     blurred = cv2.GaussianBlur(fleur_bgr, (31, 31), 0)
 
     fleur_hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
@@ -54,6 +71,26 @@ def segment_flower(fleur_bgr):
 
 
 def detect_color(fleur_bgr, fg_mask):
+    """
+    Détecte la couleur dominante de la fleur parmi une palette de couleurs nommées.
+
+    Convertit les pixels du premier plan en espace colorimétrique CIE L*a*b*,
+    calcule leur moyenne, puis retourne le nom de la couleur la plus proche
+    par distance euclidienne dans NAMED_COLORS.
+
+    Paramètres
+    ----------
+    fleur_bgr : numpy.ndarray
+        Image de la fleur au format BGR.
+    fg_mask : numpy.ndarray
+        Masque binaire (uint8) indiquant les pixels de la fleur (255 = fleur).
+
+    Retourne
+    --------
+    str
+        Nom de la couleur la plus proche parmi les clés de NAMED_COLORS
+        (ex. : "Rouge", "Bleu", "Jaune", etc.).
+    """
     fleur_lab = cv2.cvtColor(fleur_bgr, cv2.COLOR_BGR2Lab).reshape(-1, 3)
     fg_pixels = fleur_lab[fg_mask.ravel() == 255].astype(np.float32)
     fg_pixels[:, 0] = fg_pixels[:, 0] * 100 / 255
@@ -64,6 +101,27 @@ def detect_color(fleur_bgr, fg_mask):
     return min(NAMED_COLORS, key=lambda c: np.linalg.norm(mean_lab - NAMED_COLORS[c]))
 
 def color_and_image(img):
+    """
+    Pipeline complet : charge l'image, segmente la fleur et détecte sa couleur.
+
+    Lit l'image 'test4.jpeg' depuis le répertoire du script, applique le
+    prétraitement de contour via process_flower_image, segmente la fleur,
+    identifie sa couleur dominante, puis retourne l'image recadrée sans fond.
+
+    Paramètres
+    ----------
+    img : str
+        Nom du fichier image (non utilisé directement — l'image est chargée
+        en dur depuis 'test4.jpeg' dans le répertoire courant du script).
+
+    Retourne
+    --------
+    color : str
+        Nom de la couleur dominante détectée (ex. : "Rose", "Violet").
+    fleur_no_bg : numpy.ndarray
+        Image de la fleur sans fond (pixels hors masque mis à zéro),
+        au format RGB.
+    """
     fleur_bgr = cv2.imread(os.path.join(script_dir, 'test4.jpeg'))
     contour = process_flower_image(fleur_bgr)
     fleur_rgb = cv2.bilateralFilter(cv2.cvtColor(fleur_bgr, cv2.COLOR_BGR2RGB), 9, 75, 75)
