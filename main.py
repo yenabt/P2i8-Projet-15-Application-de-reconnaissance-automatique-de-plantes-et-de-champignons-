@@ -7,7 +7,8 @@ from kivy.graphics import Rotate, PushMatrix, PopMatrix
 from android.permissions import request_permissions, Permission
 import os # For path manipulation
 import sys # For modifying sys.path to import local modules
-from skimage.io import imread, imsave # To load and save images for processing
+import cv2 # To load and save images for processing
+import numpy as np
 
 # Add the directory containing contour.py to sys.path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'reconnaissance_images'))
@@ -52,19 +53,27 @@ class CameraApp(App):
         print("Original photo saved:", original_photo_path)
 
         try:
-            img_array = imread(original_photo_path)
+            # OpenCV charge en BGR par défaut, on convertit en RGB pour l'algorithme
+            img_bgr = cv2.imread(original_photo_path)
+            if img_bgr is None:
+                raise FileNotFoundError(f"Impossible de lire l'image à {original_photo_path}")
         except Exception as e:
             print(f"Error loading captured image {original_photo_path}: {e}")
             self.last_photo.source = original_photo_path # Fallback
             self.last_photo.reload()
             return
 
-        processed_img_array = process_flower_image(img_array)
+        # Gère le retour : soit l'image seule, soit le tuple (image, bbox)
+        result = process_flower_image(img_bgr)
+        processed_img_array = result
 
         if processed_img_array is not None:
             if processed_img_array.dtype != np.uint8:
                 processed_img_array = (processed_img_array * 255).astype(np.uint8)
-            imsave(processed_photo_path, processed_img_array)
+            
+            # Conversion RGB vers BGR avant de sauvegarder avec OpenCV
+            img_bgr_out = cv2.cvtColor(processed_img_array, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(processed_photo_path, img_bgr_out)
             print("Processed photo saved:", processed_photo_path)
             self.last_photo.source = processed_photo_path
         else:
